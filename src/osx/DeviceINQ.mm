@@ -96,6 +96,19 @@ void DeviceINQ::EIO_SdpSearch(uv_work_t *req) {
     [pool release];
 }
 
+void DeviceINQ::EIO_SerSearch(uv_work_t *req) {
+    sdp_baton_t *baton = static_cast<sdp_baton_t *>(req->data);
+
+    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+
+    NSString *address = [NSString stringWithCString:baton->address encoding:NSASCIIStringEncoding];
+    NSString *service = [NSString stringWithCString:baton->service encoding:NSASCIIStringEncoding];
+    BluetoothWorker *worker = [BluetoothWorker getInstance: address];
+    baton->channelID = [worker getServiceChannelID: address Service:service];
+
+    [pool release];
+}
+
 void DeviceINQ::EIO_AfterSdpSearch(uv_work_t *req) {
     Nan::HandleScope scope;
 
@@ -129,6 +142,7 @@ void DeviceINQ::Init(Handle<Object> target) {
     Nan::SetPrototypeMethod(t, "inquireSync", InquireSync);
     Nan::SetPrototypeMethod(t, "inquire", Inquire);
     Nan::SetPrototypeMethod(t, "findSerialPortChannel", SdpSearch);
+    Nan::SetPrototypeMethod(t, "findServicePortChannel", SerSearch);
     Nan::SetPrototypeMethod(t, "listPairedDevices", ListPairedDevices);
     target->Set(Nan::New("DeviceINQ").ToLocalChecked(), t->GetFunction());
     target->Set(Nan::New("DeviceINQ").ToLocalChecked(), t->GetFunction());
@@ -261,6 +275,43 @@ NAN_METHOD(DeviceINQ::SdpSearch) {
     baton->inquire->Ref();
 
     uv_queue_work(uv_default_loop(), &baton->request, EIO_SdpSearch, (uv_after_work_cb)EIO_AfterSdpSearch);
+
+    return;
+}
+
+NAN_METHOD(DeviceINQ::SerSearch) {
+
+    const char *usage = "usage: sdpSearchForRFCOMM(address, service,  callback)";
+    if (info.Length() != 3) {
+        Nan::ThrowError(usage);
+    }
+
+    if (!info[0]->IsString()) {
+        Nan::ThrowTypeError("First argument should be a string value");
+    }
+    if (!info[1]->IsString()) {
+        Nan::ThrowTypeError("First argument should be a string value");
+    }
+    String::Utf8Value address(info[0]);
+    String::Utf8Value service(info[1]);
+
+    if(!info[2]->IsFunction()) {
+        Nan::ThrowTypeError("Second argument must be a function");
+    }
+    Local<Function> cb = info[2].As<Function>();
+
+    DeviceINQ* inquire = Nan::ObjectWrap::Unwrap<DeviceINQ>(info.This());
+
+    sdp_baton_t *baton = new sdp_baton_t();
+    baton->inquire = inquire;
+    baton->cb = new Nan::Callback(cb);
+    strcpy(baton->address, *address);
+    strcpy(baton->service, *service);
+    baton->channelID = -1;
+    baton->request.data = baton;
+    baton->inquire->Ref();
+
+    uv_queue_work(uv_default_loop(), &baton->request, EIO_SerSearch, (uv_after_work_cb)EIO_AfterSdpSearch);
 
     return;
 }

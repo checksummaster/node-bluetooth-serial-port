@@ -291,6 +291,20 @@ static NSLock *globalConnectLock = nil;
 	return returnValue;
 }
 
+/** Get the RFCOMM channel for a given device */
+- (int) getServiceChannelID: (NSString *) address Service:(NSString *) Service
+{
+	[sdpLock lock];
+	// call the task on the worker thread and wait for the result
+	NSDictionary *parameters = [[NSDictionary alloc] initWithObjectsAndKeys:
+		address, @"address",Service , @"service",nil ];
+
+	[self performSelector:@selector(getServiceChannelIDTask:) onThread:worker withObject:parameters waitUntilDone:true];
+	int returnValue = lastChannelID;
+	[sdpLock unlock];
+	return returnValue;
+}
+
 /** Task to get the RFCOMM channel */
 - (void) getRFCOMMChannelIDTask: (NSString *) address
 {
@@ -326,7 +340,60 @@ static NSLock *globalConnectLock = nil;
         for (NSUInteger i=0; i<[services count]; i++) {
             IOBluetoothSDPServiceRecord *sr = [services objectAtIndex: i];
 
+
             if ([sr hasServiceFromArray: uuids]) {
+                BluetoothRFCOMMChannelID cid = -1;
+                if ([sr getRFCOMMChannelID: &cid] == kIOReturnSuccess) {
+                	lastChannelID = cid;
+                	return;
+                }
+            }
+        }
+    }
+
+    // This can happen is some conditions where the network is unreliable. Just ignore for now...
+    lastChannelID = -1;
+}
+
+/** Task to get the RFCOMM channel */
+- (void) getServiceChannelIDTask: (NSDictionary *)parameters
+{
+	NSString *address = [parameters objectForKey:@"address"];
+	NSString *servicename = [parameters objectForKey:@"service"];
+
+    IOBluetoothDevice *device = [IOBluetoothDevice deviceWithAddressString:address];
+	IOBluetoothSDPUUID *uuid = [[IOBluetoothSDPUUID alloc] initWithUUID16:RFCOMM_UUID];
+    NSArray *uuids = [NSArray arrayWithObject:uuid];
+
+    // always perform a new SDP query
+    NSDate *lastServicesUpdate = [device getLastServicesUpdate];
+    NSDate *currentServiceUpdate = NULL;
+
+    // only search for the UUIDs we are going to need...
+    [device performSDPQuery: NULL uuids: uuids];
+
+    bool stop = false;
+
+	NSTimeInterval endTime = [[NSDate date] timeIntervalSince1970] + 60;
+    // if needed wait for a while for the sdp update
+    while (!stop && [[NSDate date] timeIntervalSince1970] < endTime) { // wait no more than 60 seconds for SDP update
+        currentServiceUpdate = [device getLastServicesUpdate];
+
+        if (currentServiceUpdate != NULL && [currentServiceUpdate laterDate: lastServicesUpdate]) {
+            stop = true;
+        } else {
+            sleep(1);
+        }
+    }
+
+    NSArray *services = [device services];
+
+    // if there are services check if it is the one we are looking for.
+    if (services != NULL) {
+        for (NSUInteger i=0; i<[services count]; i++) {
+            IOBluetoothSDPServiceRecord *sr = [services objectAtIndex: i];
+
+            if ([[sr getServiceName] isEqualToString: servicename]) {
                 BluetoothRFCOMMChannelID cid = -1;
                 if ([sr getRFCOMMChannelID: &cid] == kIOReturnSuccess) {
                 	lastChannelID = cid;
